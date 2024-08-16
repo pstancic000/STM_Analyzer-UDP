@@ -1740,7 +1740,7 @@ void SerialAnalyzerResults::Parse_Data_STM( char number_str[] )
     // Working with incoming and previous bytes
     // Extracting two Data nibbles from formated number_str
 
-
+    // glupa promena da proverim da li radi git
     // synchro bytes
 
     // if( synchro1 == 22 )
