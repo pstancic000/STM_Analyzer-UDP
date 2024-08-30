@@ -12,9 +12,9 @@
 // WINDOWS SPECIFIC
 
 #ifdef _MSC_VER
-#include <winsock2.h>
+#include <winsock2.h> // For struct timeval and UDP
 #include <ws2tcpip.h>
-
+#include <windows.h>    // For FILETIME and GetSystemTimeAsFileTime
 #endif
 
 // LINUX SPECIFIC
@@ -32,13 +32,44 @@
 #include <chrono>
 #include <iomanip>
 #include <cstdlib>
-
+#include <stdint.h>     // For uint64_t
 
 // Added for windows
+#ifdef _MSC_VER
 #pragma comment( lib, "ws2_32.lib" ) // Link with ws2_32.lib for Winsock
-
+#endif
 // void SerialAnalyzerResults::
 
+
+
+// Custom implementation of gettimeofday() on Windows
+
+#ifdef _MSC_VER
+int gettimeofday( struct timeval* tv, struct timezone* tz )
+{
+    FILETIME ft;
+    unsigned __int64 tmpres = 0;
+    static const unsigned __int64 epoch = ( ( unsigned __int64 )116444736000000000ULL );
+
+    if( tv )
+    {
+        GetSystemTimeAsFileTime( &ft );
+
+        tmpres |= ft.dwHighDateTime;
+        tmpres <<= 32;
+        tmpres |= ft.dwLowDateTime;
+
+        // Convert into microseconds, since Windows file time is in 100-nanosecond intervals
+        tmpres -= epoch;
+        tmpres /= 10; // Convert to microseconds
+
+        tv->tv_sec = ( long )( tmpres / 1000000UL );
+        tv->tv_usec = ( long )( tmpres % 1000000UL );
+    }
+
+    return 0;
+}
+#endif
 
 void SerialAnalyzerResults::ConvertHexStringToBytes( const char* hexString, std::vector<uint8_t>& byteArray )
 {
@@ -1526,7 +1557,7 @@ void SerialAnalyzerResults::Parse_Data_STM( char number_str[] )
 #endif
 // Creating custom epoch for WINDOWS
 #ifdef _MSC_VER
-    const std::chrono::seconds custom_epoch_seconds( 1723702957 );
+    const std::chrono::seconds custom_epoch_seconds( 1724832094 );
     const std::chrono::high_resolution_clock::time_point custom_epoch( custom_epoch_seconds );
 
 // std::chrono::time_point<std::chrono::high_resolution_clock> custom_epoch =
@@ -1554,7 +1585,7 @@ void SerialAnalyzerResults::Parse_Data_STM( char number_str[] )
     // Port and IP address values - From LLA interface
     const char* server_ip = mSettings->GetIPAddressString();
     U32 server_port = mSettings->GetPortNumber();
-    
+
     // Dynamic byte array - storing data for sending with UDP
     std::vector<uint8_t> byteArray;
 
@@ -1568,7 +1599,13 @@ void SerialAnalyzerResults::Parse_Data_STM( char number_str[] )
     uint8_t Hardwere_Type =
         1; // defines wich g3 hardware is used for sniffin (g3 modem vendor). At the moment 0 value is assigned to Microchip hardware.
     uint8_t Hardwere_Version = 1; // verson of the hardware
-    std::vector<uint8_t> Reserved_Bytes( 4, 0 );
+    // 8 FOR TIMESTAMPS
+
+    WSADATA wsaData;                             // Added for enabling gettimeofday on Windows
+    struct timeval tv;                           // Time structure
+    uint64_t miliseconds;                        // 8 byte storing the timestamp
+    // std::vector<uint8_t> TimeStampBytes( 8, 0 ); // buffer for storing the timestamp, later added as header when sending with UDP
+     std::vector<uint8_t> TimeStampBytes;
 
     // Code
     // Modifying data to be in format "0x hex value"
@@ -1648,6 +1685,30 @@ void SerialAnalyzerResults::Parse_Data_STM( char number_str[] )
 
     // cast duration in ms to integer/number to save data from previous iteration
     start_time_miliseconds_number = static_cast<int>( duration_miliseconds );
+
+
+    // Storing the timestamp Segment
+
+    // Step 1: Initialize Winsock
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+       // std::cerr << "WSAStartup failed with error: " << WSAGetLastError() << std::endl;
+        return;
+    }
+
+    // Step 2: Get the current time
+    gettimeofday(&tv, NULL);
+
+    // Step 3: Calculate miliseconds since the epoch
+    miliseconds = ((uint64_t)tv.tv_sec * 1000) + (tv.tv_usec / 1000);
+
+    // Step 4: Push miliseconds as bytes
+    for (size_t i = 0; i < 8; ++i) {
+        TimeStampBytes.push_back(reinterpret_cast<uint8_t*>(&miliseconds)[i]);
+    }
+
+    // Step 5: Clean up Winsock
+    WSACleanup();
+
 
     // Cleaning the buffer we are stroing data for UDP sending - dodato
     if( general_count == 1 )
@@ -1732,7 +1793,7 @@ void SerialAnalyzerResults::Parse_Data_STM( char number_str[] )
             CMD_ID_value = std::stoi( number_str + 2, nullptr, 16 ); // Geting CMD_ID
             sprintf( CMD_ID_buff, "%d", CMD_ID_value );              // Printing decimal version of hex CMD value into a char buffer
             // AddTabularText( "Decimalna vrednost: ", CMD_ID_buff );   // Printing decimal value
-            Print_Command_STM( CMD_ID_value );                       // function for printing message based on CMD_ID
+            Print_Command_STM( CMD_ID_value ); // function for printing message based on CMD_ID
             synchro1 = std::stoi( zero_buff + 2, nullptr, 16 );
         }
     }
@@ -1752,6 +1813,29 @@ void SerialAnalyzerResults::Parse_Data_STM( char number_str[] )
     //     // synchro2 = std::stoi( zero_buff + 2, nullptr, 16 );
     // }
     // // synchro1 = std::stoi( number_str + 2, nullptr, 16 );
+
+
+    // // Step 1: Initialize Winsock
+    // if( WSAStartup( MAKEWORD( 2, 2 ), &wsaData ) != 0 )
+    // {
+    //     // std::cerr << "WSAStartup failed with error: " << WSAGetLastError() << std::endl;
+    //     return;
+    // }
+
+    // // Step 2: Get the current time
+    // gettimeofday( &tv, NULL );
+
+    // // Step 3: Calculate milliseconds since the epoch
+    // uint64_t milliseconds = ( ( uint64_t )tv.tv_sec * 1000 ) + ( tv.tv_usec / 1000 );
+
+    // // Step 4: Push milliseconds as bytes
+    // for( size_t i = 0; i < 8; ++i )
+    // {
+    //     TimeStampBytes.push_back( reinterpret_cast<uint8_t*>( &milliseconds )[ i ] );
+    // }
+
+    // // Step 5: Clean up Winsock
+    // WSACleanup();
 
 
     // LEN bytes (4th and 5th)
@@ -1784,15 +1868,6 @@ void SerialAnalyzerResults::Parse_Data_STM( char number_str[] )
         }
         sprintf( LSB_LEN_buff_value, "%d", lsb_LEN );
 
-        // AddTabularText( "LSB Byte Value: ", LSB_LEN_buff_value, "\n\r" );
-
-        // Dodato
-        // CleanData[ 0 ] = number_str[ 2 ];
-        // CleanData[ 1 ] = number_str[ 3 ];
-        // CleanData[ 2 ] = '\0';
-        // CurrentDataLength = std::strlen( DataToSendUDP );
-        // AppendToBuffer( CleanData, DataToSendUDP, CurrentDataLength, sizeof( DataToSendUDP ) );
-
         general_count = general_count + 1;
         return;
     }
@@ -1817,11 +1892,11 @@ void SerialAnalyzerResults::Parse_Data_STM( char number_str[] )
         // Original version no header
         ConvertHexStringToBytes3( DataToSendUDP, byteArray );
 
-        byteArray.insert(byteArray.begin(), Reserved_Bytes.begin(), Reserved_Bytes.end() );
-        byteArray.insert(byteArray.begin(), Packet_Type);
-        byteArray.insert(byteArray.begin(), Hardwere_Version);
-        byteArray.insert(byteArray.begin(), Band);
-        byteArray.insert(byteArray.begin(), Hardwere_Type);
+        byteArray.insert( byteArray.begin(), TimeStampBytes.begin(), TimeStampBytes.end() );
+        byteArray.insert( byteArray.begin(), Packet_Type );
+        byteArray.insert( byteArray.begin(), Hardwere_Version );
+        byteArray.insert( byteArray.begin(), Band );
+        byteArray.insert( byteArray.begin(), Hardwere_Type );
 
         // Sending data with UDP
 
@@ -1829,13 +1904,8 @@ void SerialAnalyzerResults::Parse_Data_STM( char number_str[] )
         AddTabularText( "\n\r" );
 
         general_count = 0;
-        // payload_counter = 0;
         count_to = 0;
-        // new_message_flag = 1;
-        // load_payload = 0;
     }
-
-
     general_count = general_count + 1;
 }
 
